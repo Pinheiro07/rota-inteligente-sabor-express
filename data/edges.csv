@@ -1,0 +1,15 @@
+u,v,dist_km,time_min
+Centro,Republica,1.2,8
+Centro,Bela Vista,1.5,10
+Centro,Liberdade,1.0,7
+Republica,Santa Cecilia,1.3,9
+Santa Cecilia,Higienopolis,1.1,8
+Higienopolis,Consolacao,1.0,7
+Consolacao,Bela Vista,1.4,10
+Bela Vista,Paraiso,2.2,15
+Paraiso,Aclimacao,1.6,12
+Aclimacao,Cambuci,1.7,13
+Cambuci,Liberdade,1.4,10
+Liberdade,Bela Vista,1.1,8
+Centro,Santa Cecilia,2.0,14
+Republica,Consolacao,1.8,13
