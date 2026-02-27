@@ -15,6 +15,13 @@ from visualization import draw_graph, draw_clusters, draw_route
 PICO_MIN_PEDIDOS = 8
 K_ENTREGADORES = 2
 
+# Pasta raiz do projeto (independe de onde você roda)
+BASE_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
+
+def p(*parts):
+    """Monta caminhos absolutos dentro do projeto."""
+    return os.path.join(BASE_DIR, *parts)
+
 def open_folder(path: str):
     """Abre a pasta no explorador do Windows / macOS / Linux."""
     path = os.path.abspath(path)
@@ -34,6 +41,9 @@ class App(tk.Tk):
         self.title("Rota Inteligente - Sabor Express (IA)")
         self.geometry("920x600")
 
+        # Guarda a pasta do último run (pra abrir no botão)
+        self.last_run_dir = None
+
         # --- Topo: seleções
         frame_top = ttk.Frame(self, padding=10)
         frame_top.pack(fill="x")
@@ -49,10 +59,10 @@ class App(tk.Tk):
         self.btn_run = ttk.Button(frame_top, text="Rodar Otimização", command=self.run_all)
         self.btn_run.grid(row=0, column=4, sticky="w")
 
-        self.btn_open = ttk.Button(frame_top, text="Abrir outputs", command=lambda: open_folder("outputs"))
+        self.btn_open = ttk.Button(frame_top, text="Abrir outputs", command=self.open_outputs)
         self.btn_open.grid(row=0, column=5, sticky="w", padx=(10, 0))
 
-        # --- Meio: status rápido
+        # --- Meio: status
         frame_status = ttk.Frame(self, padding=(10, 0))
         frame_status.pack(fill="x")
 
@@ -68,8 +78,19 @@ class App(tk.Tk):
         self.txt = tk.Text(frame_log, height=22, wrap="word")
         self.txt.pack(fill="both", expand=True)
 
-        # --- Carrega dados para dropdowns
+        # --- Carrega nós pros dropdowns
         self.load_nodes()
+
+    def open_outputs(self):
+        # Se já rodou uma vez, abre a pasta do último run
+        if self.last_run_dir and os.path.exists(self.last_run_dir):
+            self.log(f"Abrindo pasta do último run: {self.last_run_dir}")
+            open_folder(self.last_run_dir)
+        else:
+            # Senão abre a pasta outputs geral
+            outputs_dir = p("outputs")
+            self.log(f"Abrindo pasta outputs: {outputs_dir}")
+            open_folder(outputs_dir)
 
     def log(self, msg: str):
         self.txt.insert("end", msg + "\n")
@@ -82,12 +103,12 @@ class App(tk.Tk):
 
     def load_nodes(self):
         try:
-            nodes = pd.read_csv("data/nodes.csv")
+            nodes = pd.read_csv(p("data", "nodes.csv"))
             node_list = nodes["node"].tolist()
+
             self.cmb_start["values"] = node_list
             self.cmb_goal["values"] = node_list
 
-            # defaults “bons”
             if "Centro" in node_list:
                 self.cmb_start.set("Centro")
             else:
@@ -96,7 +117,7 @@ class App(tk.Tk):
             if "Paraiso" in node_list:
                 self.cmb_goal.set("Paraiso")
             else:
-                self.cmb_goal.current(min(1, len(node_list)-1))
+                self.cmb_goal.current(min(1, len(node_list) - 1))
 
         except Exception as e:
             messagebox.showerror("Erro", f"Não consegui carregar data/nodes.csv\n{e}")
@@ -106,8 +127,6 @@ class App(tk.Tk):
         self.set_status("executando...")
 
         try:
-            os.makedirs("outputs", exist_ok=True)
-
             start = self.cmb_start.get().strip()
             goal = self.cmb_goal.get().strip()
 
@@ -121,34 +140,66 @@ class App(tk.Tk):
                 self.set_status("pronto.")
                 return
 
-            # 1) Grafo
-            self.log("1) Carregando grafo...")
-            G = build_graph("data/nodes.csv", "data/edges.csv")
-            draw_graph(G, "outputs/graph.png")
-            self.log("   - Gerado: outputs/graph.png")
+            # Pasta do run (timestamp)
+            ts = time.strftime("%Y%m%d_%H%M%S")
+            run_dir = p("outputs", f"run_{ts}")
+            os.makedirs(run_dir, exist_ok=True)
+            self.last_run_dir = run_dir
 
-            # 2) Pedidos
+            self.log(f"Run criado: {run_dir}")
+
+            # Grafo
+            self.log("1) Carregando grafo...")
+            G = build_graph(p("data", "nodes.csv"), p("data", "edges.csv"))
+
+            graph_path = os.path.join(run_dir, "graph.png")
+            draw_graph(G, graph_path)
+            self.log("   - Gerado: graph.png")
+
+            # Pedidos
             self.log("2) Lendo pedidos...")
-            deliveries = pd.read_csv("data/deliveries.csv")
+            deliveries_path = p("data", "deliveries.csv")
+            self.log(f"   - Lendo arquivo: {deliveries_path}")
+
+            if not os.path.exists(deliveries_path):
+                raise FileNotFoundError(f"Arquivo não encontrado: {deliveries_path}")
+
+            # Se o arquivo tiver só espaços/linhas em branco, pandas pode dar EmptyDataError
+            try:
+                deliveries = pd.read_csv(deliveries_path)
+            except pd.errors.EmptyDataError:
+                raise ValueError(
+                    "O arquivo data/deliveries.csv está sem colunas (vazio ou só com linhas em branco).\n"
+                    "Abra data/deliveries.csv, cole o CSV com cabeçalho e pedidos, e salve (Ctrl+S)."
+                )
+
             n_pedidos = len(deliveries)
+            if n_pedidos == 0:
+                raise ValueError("data/deliveries.csv não tem pedidos (0 linhas).")
+
             self.log(f"   - Pedidos: {n_pedidos}")
 
-            # 3) Regra de pico
+            # Regra de pico
+            clustered_csv_path = os.path.join(run_dir, "deliveries_with_clusters.csv")
+            clusters_img_path = os.path.join(run_dir, "clusters.png")
+
             if n_pedidos >= PICO_MIN_PEDIDOS:
                 self.log(f"3) PICO: {n_pedidos} >= {PICO_MIN_PEDIDOS} -> K-Means (k={K_ENTREGADORES})")
                 deliveries_clustered = kmeans_clusters(
-                    "data/deliveries.csv",
+                    deliveries_csv=deliveries_path,
                     k=K_ENTREGADORES,
-                    out_csv="outputs/deliveries_with_clusters.csv"
+                    out_csv=clustered_csv_path
                 )
-                draw_clusters(deliveries_clustered, "outputs/clusters.png")
-                self.log("   - Gerado: outputs/clusters.png")
+                draw_clusters(deliveries_clustered, clusters_img_path)
+                self.log("   - Gerado: clusters.png")
             else:
                 self.log(f"3) NORMAL: {n_pedidos} < {PICO_MIN_PEDIDOS} -> sem clustering")
-                deliveries.to_csv("outputs/deliveries_with_clusters.csv", index=False)
+                deliveries.to_csv(clustered_csv_path, index=False)
+                self.log("   - Gerado: deliveries_with_clusters.csv (sem cluster)")
 
-            # 4) Comparação BFS / DFS / A*
+            # Comparação BFS / DFS / A*
             self.log("4) Calculando rotas (BFS / DFS / A*)...")
+
             # BFS
             t0 = time.time()
             p_bfs, ex_bfs = bfs_path(G, start, goal)
@@ -166,32 +217,37 @@ class App(tk.Tk):
             p_astar, ex_astar, cost_astar = astar_path(G, start, goal, weight="time_min")
             ms_astar = (time.time() - t0) * 1000
 
-            # 5) Imagem da rota A*
-            draw_route(G, p_astar, "outputs/route_result.png")
-            self.log("   - Gerado: outputs/route_result.png")
+            # Imagem da rota (A*)
+            route_path = os.path.join(run_dir, "route_result.png")
+            draw_route(G, p_astar, route_path)
+            self.log("   - Gerado: route_result.png")
 
-            # 6) Relatório
+            # Relatório
+            report_path = os.path.join(run_dir, "report.txt")
+
             report_lines = []
             report_lines.append("RELATÓRIO - Sabor Express (Rota Inteligente)\n\n")
+            report_lines.append(f"Run: run_{ts}\n")
             report_lines.append(f"Pedidos carregados: {n_pedidos}\n")
             report_lines.append(f"Regra de pico: >= {PICO_MIN_PEDIDOS} ativa clustering\n\n")
-            report_lines.append(f"Rota exemplo: {start} -> {goal}\n\n")
+            report_lines.append(f"Rota escolhida na interface: {start} -> {goal}\n\n")
             report_lines.append(f"BFS: caminho={p_bfs} | tempo_min={cost_bfs} | expandidos={ex_bfs} | ms={ms_bfs:.2f}\n")
             report_lines.append(f"DFS: caminho={p_dfs} | tempo_min={cost_dfs} | expandidos={ex_dfs} | ms={ms_dfs:.2f}\n")
             report_lines.append(f"A*:  caminho={p_astar} | tempo_min={cost_astar} | expandidos={ex_astar} | ms={ms_astar:.2f}\n")
 
-            with open("outputs/report.txt", "w", encoding="utf-8") as f:
+            with open(report_path, "w", encoding="utf-8") as f:
                 f.writelines(report_lines)
 
-            # Log bonitinho na tela
+            # Log final
             self.log("\n===== RESULTADOS =====")
             self.log(f"BFS: tempo_min={cost_bfs} | expandidos={ex_bfs} | ms={ms_bfs:.2f}")
             self.log(f"DFS: tempo_min={cost_dfs} | expandidos={ex_dfs} | ms={ms_dfs:.2f}")
             self.log(f"A*:  tempo_min={cost_astar} | expandidos={ex_astar} | ms={ms_astar:.2f}")
-            self.log("Relatório: outputs/report.txt")
+            self.log(f"Relatório: {report_path}")
+            self.log(f"Arquivos deste run em: {run_dir}")
 
             self.set_status("finalizado ✅")
-            messagebox.showinfo("Pronto", "Execução finalizada! Veja a pasta outputs.")
+            messagebox.showinfo("Pronto", f"Execução finalizada!\n\nPasta do run:\n{run_dir}")
 
         except Exception as e:
             self.set_status("erro ❌")
